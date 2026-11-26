@@ -2331,7 +2331,7 @@ void main(uint3 g : SV_GroupID, uint i : SV_GroupIndex) {
             // SAFETY: mapped buffers of these sizes.
             unsafe {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), src_ptr, total);
-                std::ptr::write_bytes(_budget_ptr, 0, 256);
+                std::ptr::write_bytes(budget_ptr, 0, 256);
                 std::ptr::write_bytes(readback_ptr, 0, total);
             }
             assert!(record_clamp_as(
@@ -3174,7 +3174,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_DispatchThreadID) {
             batch::record(&pass, &warp.list, (&dst, D3D12_RESOURCE_STATE_COMMON), budget_gpu, [src_gpu; 4], table_gpu);
             // SAFETY: mapped buffers, which the list has not read yet.
             let mut table = unsafe {
-                std::ptr::write_bytes(budget_ptr, 0, 256);
+                std::ptr::write_bytes(_budget_ptr, 0, 256);
                 for r in 0..records {
                     for (w, word) in [1u32 << 22, 16, 5, 6].into_iter().enumerate() {
                         src_ptr.cast::<u32>().add(r as usize * 4 + w).write_volatile(word);
