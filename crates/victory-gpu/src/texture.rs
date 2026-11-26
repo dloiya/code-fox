@@ -823,13 +823,9 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     // always record the copy so any change found at submission lands in
     // VRAM before the bake draw executes.
     if !baking && staging.uploaded.load(Relaxed) && !staging.dirty.load(Relaxed) {
-        #[cfg(feature = "diagnostics")]
-        crate::copystat::add(crate::copystat::C::TexSkipped, 1);
         list.defer_texture(staging, copy.clone());
         return;
     }
-    #[cfg(feature = "diagnostics")]
-    crate::copystat::add(crate::copystat::C::TexUploads, 1);
     if no_wait() && fill_unlocked() {
         let there = match picking {
             Some(there) if there != u64::MAX => there,
