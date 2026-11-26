@@ -7322,9 +7322,10 @@ impl HostList {
         staging: std::sync::Arc<crate::texture::Staging>,
         copy: std::sync::Arc<crate::resource::HostTexture>,
     ) {
-        // The prelude uploads in COPY_DEST; the list's first command then
-        // transitions from that state to the state its draw requires.
-        crate::list::ensure_state(self, resource, 0x400);
+        // The list's draw records its required first state. The prelude
+        // temporarily moves the texture to COPY_DEST for a dirty upload,
+        // then restores that first state before the list begins.
+        let _ = resource;
         self.deferred().copies.push(Step::Texture(staging, copy));
     }
 
