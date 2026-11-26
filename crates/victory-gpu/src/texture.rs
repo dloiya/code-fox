@@ -801,6 +801,8 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     // dedicated per-list upload buffer through the list's GPU fence so
     // concurrent frames never overwrite each other or stall on staging hashes.
     if staging.movie_plane() {
+        #[cfg(feature = "diagnostics")]
+        crate::copystat::add(crate::copystat::C::TexUploads, 1);
         let (at, len) = staging.memory();
         let footprint = staging.footprints[0].Footprint;
         let pitch = footprint.RowPitch as usize;
