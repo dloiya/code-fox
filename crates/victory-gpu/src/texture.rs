@@ -1262,14 +1262,18 @@ impl Staging {
 
     /// Detiles the texture memory into the staging buffer if it changed
     /// since the last time (and is mapped at all).
-    pub(crate) fn refresh(&self) {
+    pub(crate) fn refresh(&self) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
+        let needs_upload = !self.uploaded.load(Relaxed) || self.dirty.load(Relaxed);
         let started = std::time::Instant::now();
         let _texture = crate::timeline::span("a texture's refresh");
         let read = self.refresh_now();
         let preparing = &crate::host::PREPARING;
         preparing[2].fetch_add(started.elapsed().as_micros() as u64, Relaxed);
         preparing[3].fetch_add(read as u64, Relaxed);
+        // A read can discover a write not covered by the fast dirty flag
+        // (notably guarded physical-page texture memory).
+        needs_upload || read != 0
     }
 
     fn movie_plane(&self) -> bool {
