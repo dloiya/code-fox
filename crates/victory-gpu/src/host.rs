@@ -7473,8 +7473,15 @@ impl HostList {
                     continue;
                 }
                 Step::Texture(staging, copy) => {
-                    if batch.texture_due(staging) && staging.refresh() {
-                        uploads.push((staging.clone(), copy.clone()));
+                    if batch.texture_due(staging) {
+                        if staging.refresh() {
+                            #[cfg(feature = "diagnostics")]
+                            add(C::TexUploads, 1);
+                            uploads.push((staging.clone(), copy.clone()));
+                        } else {
+                            #[cfg(feature = "diagnostics")]
+                            add(C::TexSkipped, 1);
+                        }
                     }
                     continue;
                 }
