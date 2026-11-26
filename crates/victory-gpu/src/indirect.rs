@@ -2331,7 +2331,7 @@ void main(uint3 g : SV_GroupID, uint i : SV_GroupIndex) {
             // SAFETY: mapped buffers of these sizes.
             unsafe {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), src_ptr, total);
-                std::ptr::write_bytes(budget_ptr, 0, 256);
+                std::ptr::write_bytes(_budget_ptr, 0, 256);
                 std::ptr::write_bytes(readback_ptr, 0, total);
             }
             assert!(record_clamp_as(
