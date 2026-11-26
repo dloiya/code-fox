@@ -3157,10 +3157,20 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_DispatchThreadID) {
         // 2^26 vertices each, as much as a draw is let run: two fill it.
         for (times, records, filled) in [(1u32, 3u64, 2usize), (2, 1, 1), (1, 1, 1), (3, 1, 0)] {
             let (_src, src_ptr, src_gpu) = warp.shared_buffer(64 << 10);
-            let (_budget, budget_ptr, budget_gpu) = warp.shared_buffer(256);
+            let (budget, _budget_ptr, budget_gpu) = warp.shared_buffer(256);
             let (back, back_ptr, _) = warp.shared_buffer(1024);
             let (_table, table_ptr, table_gpu) = warp.shared_buffer(batch::TABLE);
             let dst = warp.default_uav(64 << 10);
+            // Give the counter an explicit UAV state. Unlike the scratch
+            // arguments, it is read back by the CPU rather than transitioned
+            // by the indirect execution that consumes those arguments.
+            unsafe {
+                warp.list.ResourceBarrier(&[transition(
+                    &budget,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                )]);
+            }
             batch::record(&pass, &warp.list, (&dst, D3D12_RESOURCE_STATE_COMMON), budget_gpu, [src_gpu; 4], table_gpu);
             // SAFETY: mapped buffers, which the list has not read yet.
             let mut table = unsafe {
@@ -3179,14 +3189,19 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_DispatchThreadID) {
             }
             // SAFETY: an open list; the records are readable as arguments.
             unsafe {
-                warp.list.ResourceBarrier(&[transition(&dst, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_SOURCE)]);
+                warp.list.ResourceBarrier(&[
+                    uav_barrier(),
+                    transition(&budget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+                    transition(&dst, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_SOURCE),
+                ]);
                 warp.list.CopyBufferRegion(&back, 0, &dst, 0, 256);
+                warp.list.CopyBufferRegion(&back, 512, &budget, 0, 4);
             }
             warp.submit_and_wait();
-            // SAFETY: the list has run; mapped words.
+            // SAFETY: the list has run; the mapped readback words.
             let (spent, out): (u32, Vec<u32>) = unsafe {
                 (
-                    budget_ptr.cast::<u32>().read_volatile(),
+                    back_ptr.cast::<u32>().add(512 / 4).read_volatile(),
                     (0..records as usize).map(|r| back_ptr.cast::<u32>().add(r * batch::SLOT as usize / 4).read_volatile()).collect(),
                 )
             };
