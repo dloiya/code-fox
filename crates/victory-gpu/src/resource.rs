@@ -1713,6 +1713,7 @@ fn streamed_mip_skip(desc: &ResourceDesc, max: u64) -> u32 {
     }
     let mut skip = 0;
     while (desc.width.max(u64::from(desc.height)) >> skip) > max
+        && skip < 63
         && skip + 1 < u32::from(desc.mip_levels)
         && (desc.width >> (skip + 1)).is_multiple_of(4)
         && (u64::from(desc.height) >> (skip + 1)).is_multiple_of(4)
