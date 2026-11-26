@@ -1080,7 +1080,9 @@ mod tests {
 
         let mut state = GraphicsState::default();
         let disabled = state.describe();
-        let mut subobject = Depth1(21, D3D12_DEPTH_STENCIL_DESC1::default());
+        // Start from the exact default depth state so this test isolates the
+        // depth-bounds bit rather than the other fields of DESC1.
+        let mut subobject = Depth1(21, state.depth1());
         subobject.1.DepthBoundsTestEnable = true.into();
         // SAFETY: subobject 21 is a complete DEPTH_STENCIL1 stream entry.
         unsafe { state.read(21, (&raw const subobject).cast()) };
@@ -1263,7 +1265,9 @@ mod tests {
         let sub = Sub21(
             21,
             D3D12_DEPTH_STENCIL_DESC1 {
-                DepthEnable: false.into(),
+                // Depth bounds are evaluated as part of depth testing; keep the
+                // ordinary comparison permissive so only the bounds reject.
+                DepthEnable: true.into(),
                 DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
                 DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
                 DepthBoundsTestEnable: true.into(),
