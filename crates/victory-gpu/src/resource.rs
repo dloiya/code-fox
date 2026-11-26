@@ -1589,8 +1589,7 @@ fn hosted(this: This, make: bool) -> Option<Made> {
         // its host copy's largest mips within the current VRAM pressure cap;
         // tiled textures already acquire mip residency on demand.
         if tiled.is_none() && r.host.placed.load(Relaxed) {
-            let memory = crate::host::host().and_then(|host| host.video_memory());
-            if let Some(max) = streamed_texture_max(memory) {
+            if let Some(max) = streamed_texture_max() {
                 base = base.max(streamed_mip_skip(&r.desc, max));
             }
         }
@@ -1678,7 +1677,7 @@ fn texture_floor_bytes(vram_budget: Option<u64>) -> u64 {
 /// An explicit `VICTORY_TEXTURE_MAX=0` disables the cap; otherwise the
 /// default steps down as local VRAM pressure rises.
 #[cfg(windows)]
-fn streamed_texture_max(memory: Option<[u64; 4]>) -> Option<u64> {
+fn streamed_texture_max() -> Option<u64> {
     static OVERRIDE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     if let Some(max) = *OVERRIDE.get_or_init(|| {
         std::env::var("VICTORY_TEXTURE_MAX")
@@ -1687,10 +1686,20 @@ fn streamed_texture_max(memory: Option<[u64; 4]>) -> Option<u64> {
     }) {
         return (max != 0).then_some(max);
     }
-    let percent = memory.map_or(0, |[budget, used, ..]| {
-        (used.saturating_mul(100) / budget.max(1)).min(100)
-    });
-    Some(match percent {
+    // Texture creation is frequent; refresh the local-VRAM query at most
+    // every 50 ms, as it is used to choose a mip cap for many resources.
+    static LAST: std::sync::Mutex<(Option<std::time::Instant>, u64)> =
+        std::sync::Mutex::new((None, 0));
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.0.is_none_or(|at| at.elapsed() > std::time::Duration::from_millis(50)) {
+        last.0 = Some(std::time::Instant::now());
+        if let Some([budget, used, ..]) =
+            crate::host::host().and_then(|host| host.video_memory())
+        {
+            last.1 = (used.saturating_mul(100) / budget.max(1)).min(100);
+        }
+    }
+    Some(match last.1 {
         0..70 => 1024,
         70..85 => 512,
         _ => 256,
