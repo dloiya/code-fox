@@ -7318,14 +7318,12 @@ impl HostList {
     /// submitted, keeping it alive until the list is reset.
     pub(crate) fn defer_texture(
         &self,
-        resource: This,
         staging: std::sync::Arc<crate::texture::Staging>,
         copy: std::sync::Arc<crate::resource::HostTexture>,
     ) {
         // The list's draw records its required first state. The prelude
         // temporarily moves the texture to COPY_DEST for a dirty upload,
         // then restores that first state before the list begins.
-        let _ = resource;
         self.deferred().copies.push(Step::Texture(staging, copy));
     }
 
