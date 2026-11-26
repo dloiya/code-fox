@@ -825,7 +825,7 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     if !baking && staging.uploaded.load(Relaxed) && !staging.dirty.load(Relaxed) {
         #[cfg(feature = "diagnostics")]
         crate::copystat::add(crate::copystat::C::TexSkipped, 1);
-        list.defer_texture(resource, staging, copy.clone());
+        list.defer_texture(staging, copy.clone());
         return;
     }
     #[cfg(feature = "diagnostics")]
