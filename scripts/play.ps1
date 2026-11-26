@@ -3,12 +3,14 @@
 # -Safe         without the newer, faster ways (the first thing to try when something is wrong)
 # -RayTracing   the title's own ray-traced indirect light: lit interiors, about a third slower
 # -Build        target\diag (the default, the build all measurements are of) or target\release
-# -More         other settings: -More @{VICTORY_PANEL='1'}
+# -LowMemory    experimental preset for GPUs with 4-6 GiB VRAM and 16 GiB system RAM
+# -More         other settings: -More @{VICTORY_PANEL='1'} (overrides presets)
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
     [switch]$Safe,
     [switch]$RayTracing,
+    [switch]$LowMemory,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{}
 )
@@ -24,6 +26,17 @@ if ($Safe) {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'
 }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
+if ($LowMemory) {
+    # Conservative starting point for 4 GiB VRAM / 16 GiB system RAM.
+    # These are ceilings and retention policies, not a promise of playability.
+    $settings.VICTORY_TEXTURE_BUDGET_MB = '768'
+    $settings.VICTORY_TEXTURE_KEEP = '0'
+    $settings.VICTORY_TEXTURE_SPARE_BLOCKS = '2'
+    $settings.VICTORY_CARD_ROOM_FOR_TARGETS_MB = '512'
+    $settings.VICTORY_MEMORY_CARD_MB = '512'
+    $settings.VICTORY_MEMORY_PAGE_LIMIT_MB = '512'
+}
+# User-supplied overrides always win over the preset.
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 
 $victory = Join-Path $PSScriptRoot "..\target\$Build\victory.exe"

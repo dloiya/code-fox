@@ -84,8 +84,24 @@ const PAGE: u64 = 1 << 16;
 const ARENA: u64 = 64 << 20;
 /// What is compared at a time.
 const PIECE: usize = 4096;
-/// Pages held, at most (3 GiB).
+/// Default pages held, at most (3 GiB). The low-memory launcher can
+/// lower this with VICTORY_MEMORY_PAGE_LIMIT_MB.
 const MOST: usize = 3 << 14;
+
+fn page_limit_for_mb(mb: Option<u64>) -> usize {
+    mb.map_or(MOST, |mb| {
+        (mb.clamp(64, 3072) * (1 << 20) / PAGE) as usize
+    })
+}
+
+fn most_pages() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let mb = std::env::var("VICTORY_MEMORY_PAGE_LIMIT_MB").ok()
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        page_limit_for_mb(mb)
+    })
+}
 /// Pages of title memory with small title buffers in them, at most.
 const WINDOWS: usize = 512;
 /// The biggest packed structure taken for one.
@@ -369,9 +385,10 @@ impl Memory {
             }
             return false;
         }
-        if self.pages.len() >= MOST {
+        let most = most_pages();
+        if self.pages.len() >= most {
             static ONCE: std::sync::Once = std::sync::Once::new();
-            ONCE.call_once(|| tracing::warn!(MOST, "title memory by address: no more pages are taken; others read zeros"));
+            ONCE.call_once(|| tracing::warn!(page_limit = most, "title memory by address: no more pages are taken; others read zeros"));
             return false;
         }
         if let Some((copy, at)) = self.free.pop() {
@@ -926,7 +943,8 @@ pub(crate) fn ready(
     if builds && sizes_wait() && asks_size(written, constants, threads) {
         list.first_use(SIZES);
     }
-    while builds && m.free.len() < SPARE && m.pages.len() + m.free.len() < MOST && m.another() {}
+    let most = most_pages();
+    while builds && m.free.len() < SPARE && m.pages.len() + m.free.len() < most && m.another() {}
     m.stats.uses[usize::from(builds)] += 1;
     // Once per list and page named: the builder dispatches hundreds of times
     // a frame with the same arguments.
@@ -1276,6 +1294,14 @@ mod dump {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_address_page_limit_is_bounded_and_uses_64k_pages() {
+        assert_eq!(page_limit_for_mb(None), MOST);
+        assert_eq!(page_limit_for_mb(Some(512)), 8 * 1024);
+        assert_eq!(page_limit_for_mb(Some(1)), 1024);
+        assert_eq!(page_limit_for_mb(Some(8192)), MOST);
+    }
 
     #[test]
     fn a_piece_takes_what_changed() {
