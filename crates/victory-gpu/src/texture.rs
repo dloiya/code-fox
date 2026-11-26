@@ -837,7 +837,7 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     }
     // Refresh at submission, then put the copy on the prelude so the GPU
     // reads the staging buffer only after that refresh has completed.
-    list.defer_texture(resource, staging.clone(), copy.clone());
+    list.defer_texture(staging.clone(), copy.clone());
     // A host copy that took the place of one with fewer levels: the slots
     // that show that one are made again once this upload has run.
     if staging.first == staging.level0 && copy.grown.swap(false, Relaxed) {
