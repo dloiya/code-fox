@@ -6681,6 +6681,16 @@ impl HostList {
                     host_state(real),
                     host_state(COPY_DEST),
                 ));
+                // A deferred upload can outlive the list state entry (for
+                // example, a texture whose view was invalidated meanwhile).
+                // In that case restore the resource's actual prior state.
+                if !states.contains_key(&key) {
+                    barriers.push(transition(
+                        &copy.texture,
+                        host_state(COPY_DEST),
+                        host_state(real),
+                    ));
+                }
             }
             if crate::pool::on() && staging.needs_aliasing_barrier() {
                 aliasing.push(D3D12_RESOURCE_BARRIER {
