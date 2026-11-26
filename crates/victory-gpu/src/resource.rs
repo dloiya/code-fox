@@ -1585,6 +1585,15 @@ fn hosted(this: This, make: bool) -> Option<Made> {
                 base = base_level(&r.desc, first);
             }
         }
+        // A non-tiled placed texture is the title's streamed texture. Keep
+        // its host copy's largest mips within the current VRAM pressure cap;
+        // tiled textures already acquire mip residency on demand.
+        if tiled.is_none() && r.host.placed.load(Relaxed) {
+            let memory = crate::host::host().and_then(|host| host.video_memory());
+            if let Some(max) = streamed_texture_max(memory) {
+                base = base.max(streamed_mip_skip(&r.desc, max));
+            }
+        }
         let texture = match texture {
             Some(texture) => Some(texture),
             None => host_texture(&r.desc.from_level(base), r.host.state, clear),
@@ -1663,6 +1672,56 @@ fn texture_floor_bytes(vram_budget: Option<u64>) -> u64 {
         Some(budget) => MAX_FLOOR.min(budget / 4),
         None => MAX_FLOOR,
     }
+}
+
+/// Largest dimension retained for streamed block-compressed 2D textures.
+/// An explicit `VICTORY_TEXTURE_MAX=0` disables the cap; otherwise the
+/// default steps down as local VRAM pressure rises.
+#[cfg(windows)]
+fn streamed_texture_max(memory: Option<[u64; 4]>) -> Option<u64> {
+    static OVERRIDE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    if let Some(max) = *OVERRIDE.get_or_init(|| {
+        std::env::var("VICTORY_TEXTURE_MAX")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    }) {
+        return (max != 0).then_some(max);
+    }
+    let percent = memory.map_or(0, |[budget, used, ..]| {
+        (used.saturating_mul(100) / budget.max(1)).min(100)
+    });
+    Some(match percent {
+        0..70 => 1024,
+        70..85 => 512,
+        _ => 256,
+    })
+}
+
+/// Number of largest mips a streamed texture can omit while keeping the
+/// remaining dimensions valid block-compressed extents.
+fn streamed_mip_skip(desc: &ResourceDesc, max: u64) -> u32 {
+    const TEXTURE_2D: u32 = 3;
+    let block_compressed = (70..=84).contains(&desc.format) || (94..=99).contains(&desc.format);
+    if max == 0
+        || desc.dimension != TEXTURE_2D
+        || desc.flags & 7 != 0
+        || !block_compressed
+        || desc.mip_levels < 2
+        || desc.sample_count > 1
+    {
+        return 0;
+    }
+    let mut skip = 0;
+    while (desc.width.max(u64::from(desc.height)) >> skip) > max
+        && skip + 1 < u32::from(desc.mip_levels)
+        && (desc.width >> (skip + 1)).is_multiple_of(4)
+        && (u64::from(desc.height) >> (skip + 1)).is_multiple_of(4)
+        && desc.width >> (skip + 1) > 0
+        && u64::from(desc.height) >> (skip + 1) > 0
+    {
+        skip += 1;
+    }
+    skip
 }
 
 /// Whether more host copies of textures the title fills may be made for
@@ -4531,6 +4590,24 @@ float4 lit() : SV_Target { return 1.0; }
         // The resource keeps the heap alive.
         assert_eq!(slot::<Release>(heap, 0x10)(heap), 1);
         assert_eq!(slot::<Release>(placed, 0x10)(placed), 0);
+    }
+
+    #[test]
+    fn streamed_mip_cap_skips_only_safe_block_compressed_levels() {
+        let mut desc = texture(4096, 2048, 98, 13);
+        assert_eq!(streamed_mip_skip(&desc, 1024), 2);
+        assert_eq!(streamed_mip_skip(&desc, 512), 3);
+        assert_eq!(streamed_mip_skip(&desc, 256), 4);
+        assert_eq!(streamed_mip_skip(&desc, 0), 0);
+
+        desc.flags = 1;
+        assert_eq!(streamed_mip_skip(&desc, 256), 0, "render targets are not capped");
+        desc.flags = 0;
+        desc.format = 28;
+        assert_eq!(streamed_mip_skip(&desc, 256), 0, "uncompressed formats are not capped");
+        desc.format = 98;
+        desc.dimension = BUFFER;
+        assert_eq!(streamed_mip_skip(&desc, 256), 0, "buffers are not capped");
     }
 
     #[test]
