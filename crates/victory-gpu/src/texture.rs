@@ -801,6 +801,8 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     // dedicated per-list upload buffer through the list's GPU fence so
     // concurrent frames never overwrite each other or stall on staging hashes.
     if staging.movie_plane() {
+        #[cfg(feature = "diagnostics")]
+        crate::copystat::add(crate::copystat::C::TexUploads, 1);
         let (at, len) = staging.memory();
         let footprint = staging.footprints[0].Footprint;
         let pitch = footprint.RowPitch as usize;
@@ -823,13 +825,9 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     // always record the copy so any change found at submission lands in
     // VRAM before the bake draw executes.
     if !baking && staging.uploaded.load(Relaxed) && !staging.dirty.load(Relaxed) {
-        #[cfg(feature = "diagnostics")]
-        crate::copystat::add(crate::copystat::C::TexSkipped, 1);
-        list.defer_texture(staging);
+        list.defer_texture(staging, copy.clone());
         return;
     }
-    #[cfg(feature = "diagnostics")]
-    crate::copystat::add(crate::copystat::C::TexUploads, 1);
     if no_wait() && fill_unlocked() {
         let there = match picking {
             Some(there) if there != u64::MAX => there,
@@ -837,17 +835,9 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
         };
         staging.expected.store(there, Relaxed);
     }
-    record_upload(list, resource, texture, &staging, &staging.buffer, staging.base);
-    // When the list is submitted, its copy takes what the staging buffer
-    // holds by then: noted before the check below, which sets `dirty`
-    // again if it detiles (the next list then uploads once more).
-    {
-        let staging = staging.clone();
-        list.defer_host(move || {
-            staging.uploaded.store(true, Relaxed);
-            staging.dirty.store(false, Relaxed);
-        });
-    }
+    // Refresh at submission, then put the copy on the prelude so the GPU
+    // reads the staging buffer only after that refresh has completed.
+    list.defer_texture(staging.clone(), copy.clone());
     // A host copy that took the place of one with fewer levels: the slots
     // that show that one are made again once this upload has run.
     if staging.first == staging.level0 && copy.grown.swap(false, Relaxed) {
@@ -863,13 +853,10 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
     // memory, which the card drops).
     let on_demand = if staging.on_demand { crate::resource::host_tiled(resource) } else { None };
     let Some(on_demand) = on_demand else {
-        // Once per submission however many of its lists sample the texture.
-        list.defer_texture(staging);
-        // Then what the list's copy puts in the host copy is known.
+        // Then what the prelude's copy puts in the host copy is known.
         list.defer_host(move || noted.note_held());
         return;
     };
-    list.defer_texture(staging.clone());
     list.defer_host(move || {
         let waiting = on_demand.uploaded(staging.detiled.load(Relaxed), staging.memory as u64);
         staging.waiting.store(if waiting { crate::host::moment().max(1) } else { 0 }, Relaxed);
@@ -959,6 +946,51 @@ fn record_upload(
         };
         // SAFETY: an open list; both locations name live resources.
         unsafe { list.list.CopyTextureRegion(&to, 0, 0, 0, &from, None) };
+    }
+}
+
+impl Staging {
+    /// Whether the host copy needs an aliasing barrier before its first upload.
+    pub(crate) fn needs_aliasing_barrier(&self) -> bool {
+        !self.uploaded.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records the dirty staging contents onto a prelude command list.
+    pub(crate) fn record_copies(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        texture: &ID3D12Resource,
+    ) {
+        for (i, footprint) in self.footprints.iter().enumerate() {
+            let to = D3D12_TEXTURE_COPY_LOCATION {
+                // SAFETY: a borrowed pointer the location never releases.
+                pResource: unsafe { std::mem::transmute_copy(texture) },
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: self.first - self.level0 + i as u32,
+                },
+            };
+            let from = D3D12_TEXTURE_COPY_LOCATION {
+                // SAFETY: as above.
+                pResource: unsafe { std::mem::transmute_copy(&self.buffer) },
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                        Offset: self.base + footprint.Offset,
+                        ..*footprint
+                    },
+                },
+            };
+            // SAFETY: an open prelude; both resources remain alive through submission.
+            unsafe { list.CopyTextureRegion(&to, 0, 0, 0, &from, None) };
+        }
+    }
+
+    /// The prelude now contains the first upload of this staging buffer.
+    pub(crate) fn mark_uploaded(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.uploaded.store(true, Relaxed);
+        self.dirty.store(false, Relaxed);
     }
 }
 
@@ -1228,14 +1260,18 @@ impl Staging {
 
     /// Detiles the texture memory into the staging buffer if it changed
     /// since the last time (and is mapped at all).
-    pub(crate) fn refresh(&self) {
+    pub(crate) fn refresh(&self) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
+        let needs_upload = !self.uploaded.load(Relaxed) || self.dirty.load(Relaxed);
         let started = std::time::Instant::now();
         let _texture = crate::timeline::span("a texture's refresh");
         let read = self.refresh_now();
         let preparing = &crate::host::PREPARING;
         preparing[2].fetch_add(started.elapsed().as_micros() as u64, Relaxed);
         preparing[3].fetch_add(read as u64, Relaxed);
+        // A read can discover a write not covered by the fast dirty flag
+        // (notably guarded physical-page texture memory).
+        needs_upload || read != 0
     }
 
     fn movie_plane(&self) -> bool {

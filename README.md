@@ -63,6 +63,27 @@ cargo build --locked --profile diag -p victory --features diagnostics
 scripts\play.ps1 -Exe <path of your copy's executable>
 ```
 
+For a constrained GPU, try the experimental memory profile:
+
+```powershell
+scripts\play.ps1 -Exe <path of your copy's executable> -LowMemory
+```
+
+`-LowMemory` caps bindless texture copies at 768 MiB, limits raw-address page
+backing to 512 MiB, limits its local-VRAM copy budget to 512 MiB, retains at most
+two empty texture-pool blocks, and uses the faster texture-eviction policy.
+These are conservative starting limits for 4–6 GiB GPUs with 16 GiB system RAM;
+they can cause missing or delayed textures, reduced performance, or failure if
+the title requires more resident data. They have not yet been tested on an
+RTX 3050 4 GiB laptop. Use `-More @{VICTORY_TEXTURE_BUDGET_MB='1024'}` to
+override an individual setting. The normal profile is unchanged.
+
+Placed, block-compressed 2D textures also use an adaptive largest-mip cap:
+1024 px below 70% local-VRAM use, 512 px from 70–85%, and 256 px above 85%.
+Set `VICTORY_TEXTURE_MAX` to a pixel dimension to override the cap, or to
+`0` to disable it. This cap is bypassed for textures using the tiled,
+on-demand residency path.
+
 `scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
 something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
 

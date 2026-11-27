@@ -1071,6 +1071,31 @@ mod tests {
 
     use super::*;
 
+    /// Depth-bounds state must participate in the pipeline key. This
+    /// isolates stream parsing from adapter-specific rendering support.
+    #[test]
+    fn depth_bounds_flag_changes_the_pipeline_key() {
+        #[repr(C, align(8))]
+        struct Depth1(u32, D3D12_DEPTH_STENCIL_DESC1);
+
+        let mut state = GraphicsState::default();
+        let disabled = state.describe();
+        // Start from the exact default depth state so this test isolates the
+        // depth-bounds bit rather than the other fields of DESC1.
+        let mut subobject = Depth1(21, state.depth1());
+        subobject.1.DepthBoundsTestEnable = true.into();
+        // SAFETY: subobject 21 is a complete DEPTH_STENCIL1 stream entry.
+        unsafe { state.read(21, (&raw const subobject).cast()) };
+        assert!(state.depth_bounds);
+        assert_ne!(state.describe(), disabled, "enabled depth bounds need a distinct pipeline key");
+
+        subobject.1.DepthBoundsTestEnable = false.into();
+        // SAFETY: same complete stream entry, now with depth bounds disabled.
+        unsafe { state.read(21, (&raw const subobject).cast()) };
+        assert!(!state.depth_bounds);
+        assert_eq!(state.describe(), disabled);
+    }
+
     /// A triangle mesh shader of our own and a pixel shader for it.
     const MS: &str = "struct V { float4 p : SV_Position; };
         [outputtopology(\"triangle\")] [numthreads(1, 1, 1)]
@@ -1240,7 +1265,9 @@ mod tests {
         let sub = Sub21(
             21,
             D3D12_DEPTH_STENCIL_DESC1 {
-                DepthEnable: false.into(),
+                // Depth bounds are evaluated as part of depth testing; keep the
+                // ordinary comparison permissive so only the bounds reject.
+                DepthEnable: true.into(),
                 DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
                 DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
                 DepthBoundsTestEnable: true.into(),

@@ -63,11 +63,27 @@ pub(crate) fn room(memory: Option<[u64; 4]>) {
     }
 }
 
-fn spares(memory: Option<[u64; 4]>, keep: bool) -> usize {
-    match memory {
-        Some([budget, used, ..]) if keep && u128::from(used) * 100 < u128::from(budget) * 85 => SPARE_KEPT,
+fn spares_for(memory: Option<[u64; 4]>, keep: bool, configured: Option<usize>) -> usize {
+    const SMALL_VRAM: u64 = 6 << 30;
+    let default = match memory {
+        Some([budget, used, ..])
+            if budget != 0 && keep && u128::from(used) * 100 < u128::from(budget) * 85 =>
+        {
+            // Retaining 64 empty 64 MiB blocks is a 4 GiB reserve: larger
+            // than the entire local-memory budget of a 4 GiB adapter.
+            if budget <= SMALL_VRAM { SPARE } else { SPARE_KEPT }
+        }
         _ => SPARE,
-    }
+    };
+    configured.map_or(default, |blocks| blocks.min(SPARE_KEPT))
+}
+
+fn spares(memory: Option<[u64; 4]>, keep: bool) -> usize {
+    static CONFIGURED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let configured = *CONFIGURED.get_or_init(|| {
+        std::env::var("VICTORY_TEXTURE_SPARE_BLOCKS").ok()?.trim().parse().ok()
+    });
+    spares_for(memory, keep, configured)
 }
 
 /// Milliseconds until a piece given back is used again. (It was three
@@ -598,11 +614,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_blocks_stay_while_the_card_has_room() {
-        assert_eq!(spares(Some([100, 84, 0, 0]), true), SPARE_KEPT);
-        assert_eq!(spares(Some([100, 85, 0, 0]), true), SPARE);
-        assert_eq!(spares(Some([100, 10, 0, 0]), false), SPARE);
-        assert_eq!(spares(None, true), SPARE);
+    fn empty_block_retention_scales_with_local_vram() {
+        const GIB: u64 = 1 << 30;
+        assert_eq!(spares_for(Some([4 * GIB, 3 * GIB, 0, 0]), true, None), SPARE);
+        assert_eq!(spares_for(Some([24 * GIB, 20 * GIB, 0, 0]), true, None), SPARE_KEPT);
+        assert_eq!(spares_for(Some([24 * GIB, 21 * GIB, 0, 0]), true, None), SPARE);
+        assert_eq!(spares_for(Some([24 * GIB, 10 * GIB, 0, 0]), false, None), SPARE);
+        assert_eq!(spares_for(None, true, None), SPARE);
+        assert_eq!(spares_for(Some([24 * GIB, 10 * GIB, 0, 0]), true, Some(1)), 1);
+        assert_eq!(spares_for(Some([24 * GIB, 10 * GIB, 0, 0]), true, Some(100)), SPARE_KEPT);
     }
 
     #[test]

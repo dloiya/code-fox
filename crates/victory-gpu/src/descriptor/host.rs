@@ -111,7 +111,11 @@ impl Made {
     }
 }
 
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub(crate) struct HostHeap {
+    /// Identity of this host heap instance, used to reject stale releases.
+    id: u64,
     pub(crate) buffer_sweep: Mutex<crate::draw::BufferSweep>,
     pub(crate) buffer_frame: std::sync::atomic::AtomicU64,
     pub(crate) heap: ID3D12DescriptorHeap,
@@ -1591,6 +1595,7 @@ impl HostHeap {
             })
             .flatten();
         let h = HostHeap {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             buffer_sweep: Mutex::default(),
             buffer_frame: std::sync::atomic::AtomicU64::new(u64::MAX),
             heap,
@@ -2777,7 +2782,15 @@ impl HostHeap {
     /// returned).
     ///
     /// [`dynamic`]: HostHeap::dynamic
-    pub(crate) fn release(&self, first: u32, n: u32) {
+    /// Identity of this host heap instance (see [`release`]).
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn release(&self, id: u64, first: u32, n: u32) {
+        if id != self.id {
+            return;
+        }
         let Some(at) = first.checked_sub(self.count) else {
             return;
         };
@@ -4857,6 +4870,36 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dynamic_slots_are_given_back_only_to_the_heap_that_took_them() {
+        let (Some(a), Some(b)) = (HostHeap::new(false, 4), HostHeap::new(false, 4)) else {
+            return;
+        };
+        assert_ne!(a.id(), b.id());
+        let first = a.dynamic(2).unwrap();
+        let after_alloc = a.free.load(std::sync::atomic::Ordering::Relaxed);
+        a.release(b.id(), first, 2);
+        assert_eq!(a.free.load(std::sync::atomic::Ordering::Relaxed), after_alloc);
+        a.release(a.id(), first, 2);
+        assert_eq!(a.free.load(std::sync::atomic::Ordering::Relaxed), after_alloc + 2);
+    }
+
+
+    #[test]
+    fn dynamic_slots_are_given_back_only_to_the_heap_that_took_them() {
+        let (Some(a), Some(b)) = (HostHeap::new(false, 4), HostHeap::new(false, 4)) else {
+            return;
+        };
+        assert_ne!(a.id(), b.id());
+        let first = a.dynamic(2).unwrap();
+        let after_alloc = a.free.load(std::sync::atomic::Ordering::Relaxed);
+        a.release(b.id(), first, 2);
+        assert_eq!(a.free.load(std::sync::atomic::Ordering::Relaxed), after_alloc);
+        a.release(a.id(), first, 2);
+        assert_eq!(a.free.load(std::sync::atomic::Ordering::Relaxed), after_alloc + 2);
+    }
+
+
     use super::*;
 
     /// A view of a host copy that begins at a later level shows the same
